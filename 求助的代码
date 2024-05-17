@@ -1,0 +1,127 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import pandas as pd
+import re
+from fuzzywuzzy import fuzz
+from fuzzywuzzy import process
+
+class FreightCalculatorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Freight Calculator")
+
+        self.bill_path = None
+        self.price_path = None
+        self.bill_df = None
+        self.price_df = None
+
+        # 文件选择框架
+        file_frame = tk.Frame(root)
+        file_frame.pack(pady=10)
+
+        self.bill_button = tk.Button(file_frame, text="选择账单文件", command=self.load_bill_file)
+        self.bill_button.pack(side=tk.LEFT, padx=10)
+
+        self.price_button = tk.Button(file_frame, text="选择价格表文件", command=self.load_price_file)
+        self.price_button.pack(side=tk.LEFT, padx=10)
+
+        # 动作框架
+        action_frame = tk.Frame(root)
+        action_frame.pack(pady=20)
+
+        self.calculate_button = tk.Button(action_frame, text="计算运费", command=self.calculate_freight)
+        self.calculate_button.pack(side=tk.LEFT, padx=10)
+
+        self.save_button = tk.Button(action_frame, text="保存结果", command=self.save_file)
+        self.save_button.pack(side=tk.LEFT, padx=10)
+
+    def load_bill_file(self):
+        self.bill_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
+        if self.bill_path:
+            self.bill_df = pd.read_excel(self.bill_path)
+            messagebox.showinfo("信息", "账单文件加载成功")
+
+    def load_price_file(self):
+        self.price_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
+        if self.price_path:
+            self.price_df = pd.read_excel(self.price_path)
+            messagebox.showinfo("信息", "价格表文件加载成功")
+
+    def match_column_name(self, columns, keywords):
+        for col in columns:
+            for keyword in keywords:
+                if keyword in col:
+                    return col
+        return None
+
+    def auto_match_columns(self, df, keywords_dict):
+        matched_columns = {}
+        columns = df.columns.tolist()
+        for key, keywords in keywords_dict.items():
+            matched_columns[key] = self.match_column_name(columns, keywords)
+        return matched_columns
+
+    def clean_string(self, s):
+        return re.sub(r'[^a-zA-Z0-9\u4e00-\u9fff]', '', str(s)).lower()
+
+    def calculate_freight(self):
+        if self.bill_df is None or self.price_df is None:
+            messagebox.showerror("错误", "请先选择账单文件和价格表文件")
+            return
+
+        # 定义自动列匹配的关键字
+        bill_keywords = {
+            "address": ["地址", "目的地", "省"],
+            "weight": ["重量", "收件重量"],
+            "freight": ["运费"]
+        }
+
+        price_keywords = {
+            "address": ["地址", "目的地", "省"],
+            "first_weight": ["首重"],
+            "additional_weight": ["续重"]
+        }
+
+        # 自动匹配列
+        bill_columns = self.auto_match_columns(self.bill_df, bill_keywords)
+        price_columns = self.auto_match_columns(self.price_df, price_keywords)
+
+        if None in bill_columns.values() or None in price_columns.values():
+            messagebox.showerror("错误", "无法匹配到所有必需的列")
+            return
+
+        # 清理价格地址列以便匹配
+        self.price_df[price_columns["address"]] = self.price_df[price_columns["address"]].apply(self.clean_string)
+
+        # 为运费列创建空值
+        self.bill_df[bill_columns["freight"]] = 0
+
+        for idx, row in self.bill_df.iterrows():
+            destination = self.clean_string(row[bill_columns["address"]])
+            weight = row[bill_columns["weight"]]
+
+            if pd.notna(destination) and pd.notna(weight):
+                best_match = process.extractOne(destination, self.price_df[price_columns["address"]], scorer=fuzz.ratio)
+                if best_match and best_match[1] > 85:
+                    match_row = self.price_df[self.price_df[price_columns["address"]] == best_match[0]].iloc[0]
+                    first_weight_price = match_row[price_columns["first_weight"]]
+                    additional_weight_price = match_row[price_columns["additional_weight"]]
+                    freight = first_weight_price + (max(0, weight - 1) * additional_weight_price)
+                    self.bill_df.at[idx, bill_columns["freight"]] = freight
+
+        messagebox.showinfo("完成", "运费计算完成")
+
+    def save_file(self):
+        if self.bill_df is None:
+            messagebox.showerror("错误", "请先计算运费")
+            return
+
+        save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx *.xls")])
+        if save_path:
+            self.bill_df.to_excel(save_path, index=False)
+            messagebox.showinfo("完成", "文件已保存")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = FreightCalculatorApp(root)
+    root.mainloop()
